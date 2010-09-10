@@ -48,6 +48,102 @@ C_FILE_SUFFIXES = ['c', 'cc', 'cxx', 'cpp', 'C', 'h', 'hpp', 'hxx']
 debug = False
 
 
+def main(argv):
+    context = parse_cmdline_options(argv)
+    edges, not_found = collect_dependencies(context)
+    output_dependencies(context, edges, not_found)
+
+
+def parse_cmdline_options(argv):
+    """ """
+    from getopt import getopt, GetoptError
+
+    try:
+        options, remainder = getopt(argv, "de:m:ghi:o:p:q:s:t:v", \
+                                    ["debug", "exclude=", "merge=", "groups", \
+                                     "help", "include=", "output=", "paths=", \
+                                     "quotepaths=", "src_dir=", "type=", "version"])
+    except GetoptError:
+        show_usage()
+        sys.exit(1)
+    
+    program_options = { 'include_paths' : [], 'exclude': '', 'paths': [], \
+                       'merge': 'file', 'output': '', 'src_dir': '.', \
+                       'quote_types': 'both', 'type': 'dot', 'groups': '' }
+    
+    for opt, arg in options:
+        if opt in ('-h', '--help'):
+            show_usage()
+            sys.exit(0)
+        elif opt in ('-d', '--debug'):
+            global debug
+            debug = True
+        elif opt in ('-e', '--exclude'):
+            program_options['exclude'] = arg
+        elif opt in ('-m', '--merge'):
+            program_options['merge'] = arg
+        elif opt in ('-p', '--paths'):
+            program_options['paths'] = arg
+        elif opt in ('-i', '--include'):
+            program_options['include_paths'] = arg.split(',')
+        elif opt in ('-o', '--output'):
+            program_options['output'] = arg
+        elif opt in ('-q', '--quotepaths'):
+            program_options['quote_types'] = arg
+        elif opt in ('-s', '--source'):
+            program_options['src_dir'] = arg
+        elif opt in ('-t', '--type'):
+            program_options['type'] = arg
+        elif opt in ('-v', '--version'):
+            show_version_info()
+            sys.exit(0)
+    
+    return program_options
+
+
+def collect_dependencies(context):
+    """ """
+    all_edges = {}
+    all_notfound = set()
+    exclude_regexes = build_exclude_regexes(context['exclude'])
+    files = collect_cfiles(context['src_dir'])
+    files = [file_name for file_name in files if not should_file_be_excluded(file_name, exclude_regexes)]
+    for file_name in files:
+        file_name = re.sub(r'^\./', '', file_name.rstrip('\n'))
+        try:
+            fp = open(file_name, 'r')
+            edges, notfound = collect_include_dependencies(fp, context)
+            all_edges.update(edges)
+            all_notfound.update(notfound)
+        except IOError:
+            log("error while reading file_name '%s'" % file_name)
+        else:
+            fp.close()
+    
+    return all_edges, all_notfound
+
+
+def output_dependencies(context, edges, not_found):
+    """ """
+    import subprocess
+    
+    fout = sys.stdout
+    
+    if context['output'] and context['type'] == 'dot':
+        fout = open(context['output'], 'w')
+    elif context['type'] != 'dot':
+        p = subprocess.Popen('dot -T%s -o %s' % (context['type'], context['output']), 
+            shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        fout = p.stdin
+        
+    write_header(fout, context['src_dir'])
+    write_edge_definitions(fout, edges)
+    write_footer(fout)
+    alert_notfounds(not_found)
+    
+    fout.close()
+
+
 def build_exclude_regexes(excludes):
     """Builds a list or regex expressions for excluding certain files.
     
@@ -74,93 +170,6 @@ def should_file_be_excluded(file_name, exclude_regexes):
         if each_exclude.match(file_name):
             return True
     return False
-
-
-def main(argv):
-    import subprocess
-    context = parse_cmdline_options(argv)
-    
-    all_edges = {}
-    all_notfound = set()
-    exclude_regexes = build_exclude_regexes(context['exclude'])    
-    files = collect_cfiles(context['src_dir'])
-    files = [file_name for file_name in files \
-              if not should_file_be_excluded(file_name, exclude_regexes)]
-
-    for file_name in files:
-        file_name = re.sub(r'^\./', '', file_name.rstrip('\n'))
-        
-        try:
-            fp = open(file_name, 'r')
-            edges, notfound = collect_include_dependencies(fp, context)
-            all_edges.update(edges)
-            all_notfound.update(notfound)
-        except IOError:
-            log("error while reading file_name '%s'" % file_name)
-        else:
-            fp.close()
-    
-        
-    fout = sys.stdout
-    
-    if context['output'] and context['output_type'] == 'dot':
-        fout = open(context['output'], 'w')
-    elif context['output_type'] != 'dot':
-        p = subprocess.Popen('dot -T%s -o %s' % (context['output_type'], context['output']), \
-                              shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
-        fout = p.stdin
-    
-    write_header(fout, context['src_dir'])
-    write_edge_definitions(fout, all_edges)
-    write_footer(fout)
-    alert_notfounds(all_notfound)
-    
-    fout.close()
-
-    
-def parse_cmdline_options(argv):
-    """ """
-    from getopt import getopt, GetoptError
-
-    try:
-        options, remainder = getopt(argv, "de:m:ghi:o:p:q:s:t:v", \
-                                    ["debug", "exclude=", "merge=", "groups", \
-                                     "help", "include=", "output=", "paths=", \
-                                     "quotepaths=", "src_dir=", "type=", "version"])
-    except GetoptError:
-        show_usage()
-        sys.exit(1)
-    
-    program_options = { 'include_paths' : [], 'exclude': '', 'paths': [], \
-                       'merge': 'file', 'output': '', 'src_dir': '.', \
-                       'quote_types': 'both', 'output_type': 'dot', 'groups': '' }
-    
-    for opt, arg in options:
-        if opt in ('-h', '--help'):
-            show_usage()
-            sys.exit(0)
-        elif opt in ('-d', '--debug'):
-            global debug
-            debug = True
-        elif opt in ('-e', '--exclude'):
-            program_options['exclude'] = arg
-        elif opt in ('-p', '--paths'):
-            program_options['paths'] = arg
-        elif opt in ('-i', '--include'):
-            program_options['include_paths'] = arg.split(',')
-        elif opt in ('-o', '--output'):
-            program_options['output'] = arg
-        elif opt in ('-q', '--quotepaths'):
-            program_options['quote_types'] = arg
-        elif opt in ('-s', '--source'):
-            program_options['src_dir'] = arg
-        elif opt in ('-t', '--type'):
-            program_options['output_type'] = arg
-        elif opt in ('-v', '--version'):
-            show_version_info()
-            sys.exit(0)
-    
-    return program_options
 
 
 def show_version_info():
@@ -210,6 +219,12 @@ Options:
 -v, --version    print program version
 """ % (PROGRAM_NAME, PROGRAM_NAME, PROGRAM_VERSION, PROGRAM_NAME, PROGRAM_NAME))
 
+
+def write_header(fout, srcdir):
+    fout.write(DOT_GRAPH_HEADER % (os.path.basename(os.path.realpath(srcdir)), \
+                                         PROGRAM_NAME, PROGRAM_VERSION, \
+                                         time.strftime("%a, %d %b %Y %H:%M")))
+    
     
 def write_edge_definitions(fout, edges):
     for edge_def in edges:
@@ -223,11 +238,8 @@ def write_footer(fout):
     fout.write("}\n")
 
 
-def alert_notfounds(all_notfound):
-    def show_notfound(fn):
-        sys.stderr.write("Include file_name not found: %s\n" % fn)
-    
-    map(lambda fn: show_notfound(fn), sorted(all_notfound))
+def alert_notfounds(not_found):
+    [sys.stderr.write("Include file_name not found: %s\n" % fn) for fn in sorted(not_found)]
 
         
 def search_includes(incl_stmt, filename, include_paths):
@@ -261,26 +273,20 @@ def search_includes(incl_stmt, filename, include_paths):
     return None
 
 
-def to_string(filename, paths, merge):
+def to_display_version(filename, paths, merge):
     """Converts a filename to its display version."""
     if not paths:
         filename = os.path.basename(filename)
 
     if merge == 'module':
-        filename = re.sub(r'\(%s)$' % '|'.join(C_FILE_SUFFIXES), '', filename)
+        filename = re.sub(r'\.(%s)$' % '|'.join(C_FILE_SUFFIXES), '', filename)
 
     return re.sub(r'/', '/\\n', filename)
 
 
 def log(msg):
-    """ """
-    if debug: sys.stderr.write(msg)
-
-
-def write_header(fout, srcdir):
-    fout.write(DOT_GRAPH_HEADER % (os.path.basename(os.path.realpath(srcdir)), \
-                                         PROGRAM_NAME, PROGRAM_VERSION, \
-                                         time.strftime("%a, %d %b %Y %H:%M")))
+    """Print a log message on stderr."""
+    if debug: sys.stderr.write(msg + '\n')
 
 
 def collect_cfiles(srcdir):
@@ -294,6 +300,8 @@ def collect_cfiles(srcdir):
 
 
 def collect_include_dependencies(file, context):
+    """ """
+    
     def build_include_regex(quote_types):
         if quote_types == 'angle':
             return re.compile(r"^#\s*include\s+<(\S+)>")
@@ -301,6 +309,14 @@ def collect_include_dependencies(file, context):
             return re.compile(r'^#\s*include\s+"(\S+)"')
         else:
             return re.compile(r"^#\s*include\s+(\S+)") 
+    
+    def merge_directory(file, edges, include_file):
+        origin = os.path.dirname(file.name)
+        destination = os.path.dirname(include_file)
+        
+        if origin != destination:
+            edge = DOT_EDGE_DEFINITION % (origin, destination)
+            edges[edge] = edges.get(edge, 0) + 1
         
     include_regex = build_include_regex(context['quote_types'])
     edges = {}
@@ -308,6 +324,7 @@ def collect_include_dependencies(file, context):
     
     for line in file:
         matcher = include_regex.match(line)
+        
         if matcher:
             included = matcher.group(1)
             raw_included = re.sub(r'[\<\>"]', '', included)
@@ -318,14 +335,10 @@ def collect_include_dependencies(file, context):
                 continue
             
             if context['merge'] == 'directory':
-                origin = os.path.dirname(file.name)
-                to = os.path.dirname(include_file)
-                if origin != to:
-                    edge = DOT_EDGE_DEFINITION % (origin, to)
-                    edges[edge] = edges.get(edge, 0) + 1 
+                merge_directory(file, edges, include_file) 
             else:
-                includefile_display = to_string(include_file, context['paths'], context['merge'])
-                file_display = to_string(file.name, context['paths'], context['merge'])
+                includefile_display = to_display_version(include_file, context['paths'], context['merge'])
+                file_display = to_display_version(file.name, context['paths'], context['merge'])
                 
                 if context['groups']:
                     groupname = os.path.dirname(include_file)
