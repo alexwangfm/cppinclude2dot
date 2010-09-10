@@ -48,7 +48,11 @@ C_FILE_SUFFIXES = ['c', 'cc', 'cxx', 'cpp', 'C', 'h', 'hpp', 'hxx']
 debug = False
 
 
-def build_exclude_regex(excludes):
+def build_exclude_regexes(excludes):
+    """Builds a list or regex expressions for excluding certain files.
+    
+    excludes -- a string with a comma separated list of file patterns
+    """
     import fnmatch
 
     excludes = excludes.split(',')
@@ -60,79 +64,83 @@ def build_exclude_regex(excludes):
     return exclude_regex_list
 
 
-def should_file_be_excluded(file_name, exclude_regex_list):
-    for each_exclude in exclude_regex_list:
-        if  each_exclude.match(file_name):
+def should_file_be_excluded(file_name, exclude_regexes):
+    """Checks whether the given file should be excluded.
+    
+    file_name -- the file name that should be checked
+    exclude_regexes -- a list of exclude regular expressions
+    """
+    for each_exclude in exclude_regexes:
+        if each_exclude.match(file_name):
             return True
     return False
 
 
 def main(argv):
+    import subprocess
     context = parse_cmdline_options(argv)
-
-    write_header(context['src_dir'])
-    files = collect_cfiles(context['src_dir'])
-    all_links = {}
-    all_notfound = {}
     
-    exclude_regex_list = build_exclude_regex(context['exclude'])    
+    all_edges = {}
+    all_notfound = set()
+    exclude_regexes = build_exclude_regexes(context['exclude'])    
+    files = collect_cfiles(context['src_dir'])
+    files = [file_name for file_name in files \
+              if not should_file_be_excluded(file_name, exclude_regexes)]
 
     for file_name in files:
-        if should_file_be_excluded(file_name, exclude_regex_list):
-            continue
-                    
-        def prep_file_name(file_name):
-            file_name = file_name.rstrip('\n')
-            file_name = re.sub(r'^\./', '', file_name)
-            return file_name
-
-        file_name = prep_file_name(file_name)    
+        file_name = re.sub(r'^\./', '', file_name.rstrip('\n'))
         
         try:
             fp = open(file_name, 'r')
-            links, notfound = collect_include_dependencies(fp, context)
-            all_links.update(links)
+            edges, notfound = collect_include_dependencies(fp, context)
+            all_edges.update(edges)
             all_notfound.update(notfound)
         except IOError:
             log("error while reading file_name '%s'" % file_name)
         else:
             fp.close()
     
-    write_edge_definitions(all_links)    
-    write_graph_end()
+        
+    fout = sys.stdout
+    
+    if context['output'] and context['output_type'] == 'dot':
+        fout = open(context['output'], 'w')
+    elif context['output_type'] != 'dot':
+        p = subprocess.Popen('dot -T%s -o %s' % (context['output_type'], context['output']), \
+                              shell=True, stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+        fout = p.stdin
+    
+    write_header(fout, context['src_dir'])
+    write_edge_definitions(fout, all_edges)
+    write_footer(fout)
     alert_notfounds(all_notfound)
+    
+    fout.close()
 
     
 def parse_cmdline_options(argv):
+    """ """
     from getopt import getopt, GetoptError
 
     try:
-        options, remainder = getopt(argv, "de:m:ghi:o:p:q:s:v", \
+        options, remainder = getopt(argv, "de:m:ghi:o:p:q:s:t:v", \
                                     ["debug", "exclude=", "merge=", "groups", \
                                      "help", "include=", "output=", "paths=", \
                                      "quotepaths=", "src_dir=", "type=", "version"])
     except GetoptError:
         show_usage()
         sys.exit(1)
-        
-    global debug
-    debug = False
-    program_options = {}
-    program_options['include_paths'] = []
-    program_options['exclude'] = ''
-    program_options['paths'] = []
-    program_options['merge'] = 'file'
-    program_options['output'] = ''
-    program_options['src_dir'] = '.'
-    program_options['quote_types'] = 'both'
-    program_options['output_type'] = 'dot'
-    program_options['groups'] = ''
+    
+    program_options = { 'include_paths' : [], 'exclude': '', 'paths': [], \
+                       'merge': 'file', 'output': '', 'src_dir': '.', \
+                       'quote_types': 'both', 'output_type': 'dot', 'groups': '' }
     
     for opt, arg in options:
         if opt in ('-h', '--help'):
             show_usage()
             sys.exit(0)
         elif opt in ('-d', '--debug'):
+            global debug
             debug = True
         elif opt in ('-e', '--exclude'):
             program_options['exclude'] = arg
@@ -164,7 +172,7 @@ def show_usage():
     """Prints information about program usage."""
     
     sys.stdout.write(
-        r"""Usage: %s [OPTIONS]...
+        """Usage: %s [OPTIONS]...
 %s v%s (C) Michael Rueegg
 Released under the terms of the GNU General Public license.
 Report bugs to rueegg.michael@gmail.com
@@ -203,21 +211,23 @@ Options:
 """ % (PROGRAM_NAME, PROGRAM_NAME, PROGRAM_VERSION, PROGRAM_NAME, PROGRAM_NAME))
 
     
-def write_edge_definitions(all_links):
-    for key in all_links:
-        num_dep = all_links[key]
+def write_edge_definitions(fout, edges):
+    for edge_def in edges:
+        num_dep = edges[edge_def]
         if num_dep > 1:
-            key += " [penwidth=%s]" % num_dep
-        sys.stdout.write(key + "\n")
+            edge_def += " [penwidth=%s]" % num_dep
+        fout.write(edge_def + '\n')
     
     
-def write_graph_end():
-    return sys.stdout.write("}\n")
+def write_footer(fout):
+    fout.write("}\n")
 
 
 def alert_notfounds(all_notfound):
-    for key in sorted(all_notfound.iterkeys()):
-        sys.stderr.write("Include file_name not found: %s\n" % key)
+    def show_notfound(fn):
+        sys.stderr.write("Include file_name not found: %s\n" % fn)
+    
+    map(lambda fn: show_notfound(fn), sorted(all_notfound))
 
         
 def search_includes(incl_stmt, filename, include_paths):
@@ -263,15 +273,14 @@ def to_string(filename, paths, merge):
 
 
 def log(msg):
+    """ """
     if debug: sys.stderr.write(msg)
 
 
-def write_header(srcdir):
-    def get_date():
-        return time.strftime("%a, %d %b %Y %H:%M")
-    
-    sys.stdout.write(DOT_GRAPH_HEADER % (os.path.basename(os.path.realpath(srcdir)), \
-                                         PROGRAM_NAME, PROGRAM_VERSION, get_date()))
+def write_header(fout, srcdir):
+    fout.write(DOT_GRAPH_HEADER % (os.path.basename(os.path.realpath(srcdir)), \
+                                         PROGRAM_NAME, PROGRAM_VERSION, \
+                                         time.strftime("%a, %d %b %Y %H:%M")))
 
 
 def collect_cfiles(srcdir):
@@ -294,8 +303,8 @@ def collect_include_dependencies(file, context):
             return re.compile(r"^#\s*include\s+(\S+)") 
         
     include_regex = build_include_regex(context['quote_types'])
-    links = {}
-    notfound = {}
+    edges = {}
+    notfound = set()
     
     for line in file:
         matcher = include_regex.match(line)
@@ -305,7 +314,7 @@ def collect_include_dependencies(file, context):
             include_file = search_includes(raw_included, file.name, context['include_paths'])
             
             if not include_file:
-                notfound["%s from %s" % (included, file.name)] = 1
+                notfound.add("%s from %s" % (included, file.name))
                 continue
             
             if context['merge'] == 'directory':
@@ -313,7 +322,7 @@ def collect_include_dependencies(file, context):
                 to = os.path.dirname(include_file)
                 if origin != to:
                     edge = DOT_EDGE_DEFINITION % (origin, to)
-                    links[edge] = links.get(edge, 0) + 1 
+                    edges[edge] = edges.get(edge, 0) + 1 
             else:
                 includefile_display = to_string(include_file, context['paths'], context['merge'])
                 file_display = to_string(file.name, context['paths'], context['merge'])
@@ -326,9 +335,9 @@ def collect_include_dependencies(file, context):
                     
                 if file_display != includefile_display:
                     edge = DOT_EDGE_DEFINITION % (file_display, includefile_display)
-                    links[edge] = links.get(edge, 0) + 1
+                    edges[edge] = edges.get(edge, 0) + 1
                      
-    return links, notfound
+    return edges, notfound
 
 
 if __name__ == "__main__":
