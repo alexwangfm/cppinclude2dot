@@ -1,0 +1,1 @@
+Install from the root of the repository by running sudo python setup.py install. Create a source distribution by running python setup.py sdist.

@@ -50,8 +50,8 @@ debug = False
 
 def main(argv):
     context = parse_cmdline_options(argv)
-    edges, not_found = collect_dependencies(context)
-    output_dependencies(context, edges, not_found)
+    edges, clusters, not_found = collect_dependencies(context)
+    output_dependencies(context, edges, clusters, not_found)
 
 
 def parse_cmdline_options(argv):
@@ -59,9 +59,9 @@ def parse_cmdline_options(argv):
     from getopt import getopt, GetoptError
 
     try:
-        options, remainder = getopt(argv, "de:m:ghi:o:p:q:s:t:v", \
+        options, remainder = getopt(argv, "de:m:ghi:o:pq:s:t:v", \
                                     ["debug", "exclude=", "merge=", "groups", \
-                                     "help", "include=", "output=", "paths=", \
+                                     "help", "include=", "output=", "paths", \
                                      "quotepaths=", "src_dir=", "type=", "version"])
     except GetoptError:
         show_usage()
@@ -83,7 +83,9 @@ def parse_cmdline_options(argv):
         elif opt in ('-m', '--merge'):
             program_options['merge'] = arg
         elif opt in ('-p', '--paths'):
-            program_options['paths'] = arg
+            program_options['paths'] = True
+        elif opt in ('-g', '--groups'):
+            program_options['groups'] = True
         elif opt in ('-i', '--include'):
             program_options['include_paths'] = arg.split(',')
         elif opt in ('-o', '--output'):
@@ -104,26 +106,30 @@ def parse_cmdline_options(argv):
 def collect_dependencies(context):
     """ """
     all_edges = {}
+    all_clusters = set()
     all_notfound = set()
     exclude_regexes = build_exclude_regexes(context['exclude'])
     files = collect_cfiles(context['src_dir'])
-    files = [file_name for file_name in files if not should_file_be_excluded(file_name, exclude_regexes)]
+    files = [file_name for file_name in files \
+             if not should_file_be_excluded(file_name, exclude_regexes)]
+    
     for file_name in files:
         file_name = re.sub(r'^\./', '', file_name.rstrip('\n'))
         try:
             fp = open(file_name, 'r')
-            edges, notfound = collect_include_dependencies(fp, context)
+            edges, clusters, notfound = collect_include_dependencies(fp, context)
             all_edges.update(edges)
+            all_clusters.update(clusters)
             all_notfound.update(notfound)
         except IOError:
             log("error while reading file_name '%s'" % file_name)
         else:
             fp.close()
     
-    return all_edges, all_notfound
+    return all_edges, all_clusters, all_notfound
 
 
-def output_dependencies(context, edges, not_found):
+def output_dependencies(context, edges, clusters, not_found):
     """ """
     import subprocess
     
@@ -138,6 +144,7 @@ def output_dependencies(context, edges, not_found):
         
     write_header(fout, context['src_dir'])
     write_edge_definitions(fout, edges)
+    write_cluster_definitions(fout, clusters)
     write_footer(fout)
     alert_notfounds(not_found)
     
@@ -200,13 +207,13 @@ Options:
 -d, --debug      Display various debug info
 -e, --exclude    Specify a regular expression of filenames to ignore
                  For example, ignore your test harnesses.
+-g, --groups     Cluster files or modules into directory groups
+-h, --help       Print this help
+-i, --include    Followed by a comma separated list of include search paths
 -m, --merge      Granularity of the diagram:     
                     file - the default, treats each file as separate
                     module - merges .c/.cc/.cpp/.cxx and .h/.hpp/.hxx pairs
                     directory - merges directories into one node
--g, --groups     Cluster files or modules into directory groups
--h, --help       Print this help
--i, --include    Followed by a comma separated list of include search paths
 -o, --output     Outputs the DOT graph to the specified file
 -p, --paths      Leaves relative paths in displayed filenames
 -q, --quotetypes Include files by strip quotes or angle brackets:
@@ -221,9 +228,11 @@ Options:
 
 
 def write_header(fout, srcdir):
-    fout.write(DOT_GRAPH_HEADER % (os.path.basename(os.path.realpath(srcdir)), \
-                                         PROGRAM_NAME, PROGRAM_VERSION, \
-                                         time.strftime("%a, %d %b %Y %H:%M")))
+    if srcdir == '.': 
+        srcdir = os.path.basename(os.path.realpath(srcdir))
+        
+    fout.write(DOT_GRAPH_HEADER % (srcdir, PROGRAM_NAME, PROGRAM_VERSION, \
+               time.strftime("%a, %d %b %Y %H:%M")))
     
     
 def write_edge_definitions(fout, edges):
@@ -234,12 +243,17 @@ def write_edge_definitions(fout, edges):
         fout.write(edge_def + '\n')
     
     
+def write_cluster_definitions(fout, clusters):
+    map(lambda cluster_def: fout.write(cluster_def + '\n'), clusters)
+    
+    
 def write_footer(fout):
     fout.write("}\n")
 
 
 def alert_notfounds(not_found):
-    [sys.stderr.write("Include file_name not found: %s\n" % fn) for fn in sorted(not_found)]
+    map(lambda msg: sys.stderr.write("Include file_name not found: %s\n" % msg), \
+        sorted(not_found))
 
         
 def search_includes(incl_stmt, filename, include_paths):
@@ -281,7 +295,7 @@ def to_display_version(filename, paths, merge):
     if merge == 'module':
         filename = re.sub(r'\.(%s)$' % '|'.join(C_FILE_SUFFIXES), '', filename)
 
-    return re.sub(r'/', '/\\n', filename)
+    return filename
 
 
 def log(msg):
@@ -290,6 +304,7 @@ def log(msg):
 
 
 def collect_cfiles(srcdir):
+    """Collects all C/C++ files in the given source directory.""" 
     c_file_regex = re.compile(r".*\.(%s)$" % '|'.join(C_FILE_SUFFIXES))
     files = []
     
@@ -302,6 +317,14 @@ def collect_cfiles(srcdir):
 def collect_include_dependencies(file, context):
     """ """
     
+    def put_edge_def(edges, source, dest):
+        edge = DOT_EDGE_DEFINITION % (dest, source)
+        edges[edge] = edges.get(edge, 0) + 1
+    
+    def put_cluster_def(clusters, group_name, file_name):
+        group_name = os.path.dirname(group_name)
+        clusters.add(DOT_SUB_GRAPH % (group_name, group_name, file_name))
+    
     def build_include_regex(quote_types):
         if quote_types == 'angle':
             return re.compile(r"^#\s*include\s+<(\S+)>")
@@ -311,16 +334,16 @@ def collect_include_dependencies(file, context):
             return re.compile(r"^#\s*include\s+(\S+)") 
     
     def merge_directory(file, edges, include_file):
-        origin = os.path.dirname(file.name)
-        destination = os.path.dirname(include_file)
+        origin = os.path.dirname(include_file)
+        destination = os.path.dirname(file.name)
         
         if origin != destination:
-            edge = DOT_EDGE_DEFINITION % (origin, destination)
-            edges[edge] = edges.get(edge, 0) + 1
+            put_edge_def(edges, origin, destination)
         
     include_regex = build_include_regex(context['quote_types'])
     edges = {}
     notfound = set()
+    clusters = set()
     
     for line in file:
         matcher = include_regex.match(line)
@@ -328,7 +351,8 @@ def collect_include_dependencies(file, context):
         if matcher:
             included = matcher.group(1)
             raw_included = re.sub(r'[\<\>"]', '', included)
-            include_file = search_includes(raw_included, file.name, context['include_paths'])
+            include_file = search_includes(raw_included, file.name, \
+                                            context['include_paths'])
             
             if not include_file:
                 notfound.add("%s from %s" % (included, file.name))
@@ -337,20 +361,20 @@ def collect_include_dependencies(file, context):
             if context['merge'] == 'directory':
                 merge_directory(file, edges, include_file) 
             else:
-                includefile_display = to_display_version(include_file, context['paths'], context['merge'])
-                file_display = to_display_version(file.name, context['paths'], context['merge'])
+                includefile_display = to_display_version(include_file, \
+                                                         context['paths'], \
+                                                         context['merge'])
+                file_display = to_display_version(file.name, context['paths'], \
+                                                   context['merge'])
                 
                 if context['groups']:
-                    groupname = os.path.dirname(include_file)
-                    sys.stdout.write(DOT_SUB_GRAPH % (groupname, groupname, includefile_display))
-                    groupname = os.path.dirname(file.name)
-                    sys.stdout.write(DOT_SUB_GRAPH % (groupname, groupname, file_display))
+                    put_cluster_def(clusters, include_file, includefile_display)
+                    put_cluster_def(clusters, file.name, file_display)
                     
                 if file_display != includefile_display:
-                    edge = DOT_EDGE_DEFINITION % (file_display, includefile_display)
-                    edges[edge] = edges.get(edge, 0) + 1
+                    put_edge_def(edges, includefile_display, file_display)
                      
-    return edges, notfound
+    return edges, clusters, notfound
 
 
 if __name__ == "__main__":

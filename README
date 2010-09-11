@@ -1,0 +1,10 @@
+Visualizes include relationships between C/C++ source and header files
+as a graph in DOT syntax. To generate a dependency graph, type the following:
+
+1. $ cd ~/program/src
+
+2. $ cppinclude2dot > include_dep.dot
+3. $ dot -Tpng include_dep.dot > include_dep.png
+or more easy: $ cppinclude2dot -t png -o include_dep.png 
+
+To get more information type cppinclude2dot --help.
